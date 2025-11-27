@@ -139,15 +139,15 @@ The connection can also be created using the standard Unity Catalog API.
 
 This connector provides predefined report types that combine commonly used dimensions and metrics:
 
-### Report Types
+### Default Report Types
 
 | Report Name | Description | Primary Key | Ingestion Type |
 |-------------|-------------|-------------|----------------|
-| `basic_report` | Basic traffic and engagement metrics with source and medium | `_composite_key` | Snapshot |
-| `user_demographics` | User demographic information including geography and user attributes | `_composite_key` | Snapshot |
-| `traffic_sources` | Traffic source analysis with campaign information | `_composite_key` | Snapshot |
-| `page_performance` | Page-level performance metrics | `_composite_key` | Snapshot |
-| `event_data` | Custom event tracking data | `_composite_key` | Snapshot |
+| `basic_report` | Basic traffic and engagement metrics with source and medium | `_composite_key` | Incremental |
+| `user_demographics` | User demographic information including geography and user attributes | `_composite_key` | Incremental |
+| `traffic_sources` | Traffic source analysis with campaign information | `_composite_key` | Incremental |
+| `page_performance` | Page-level performance metrics | `_composite_key` | Incremental |
+| `event_data` | Custom event tracking data | `_composite_key` | Incremental |
 
 ### Report Dimensions and Metrics
 
