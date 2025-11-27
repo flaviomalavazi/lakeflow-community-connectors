@@ -32,7 +32,7 @@ Package initialization file for Python imports.
 
 #### `configs/dev_config.json`
 Template configuration file with placeholders for:
-- Google OAuth credentials (client_id, client_secret, refresh_token)
+- Google Service Account JSON key (as a JSON-escaped string)
 - GA4 property ID
 - Date range configuration (start_date, end_date)
 
@@ -42,7 +42,7 @@ Template configuration file with placeholders for:
 
 #### `ga4_reporting_api_doc.md`
 Comprehensive API documentation following the source API doc template, including:
-- **Authorization**: OAuth 2.0 setup and token management
+- **Authorization**: Service Account authentication setup and JWT token flow
 - **Object List**: Available report types
 - **Object Schema**: Detailed schema for each report type
 - **Primary Keys**: Composite key strategy
@@ -60,7 +60,7 @@ Comprehensive API documentation following the source API doc template, including
 #### `README.md`
 Public-facing user documentation including:
 - Prerequisites and setup instructions
-- Step-by-step OAuth credential generation
+- Step-by-step Service Account credential generation and setup
 - Connection parameter reference
 - Supported report types with dimensions and metrics
 - Data type mappings
@@ -129,10 +129,11 @@ The connector provides 5 predefined report types optimized for common analytics 
 ## Technical Implementation Details
 
 ### Authentication
-- Uses OAuth 2.0 with refresh token flow
-- Automatic access token refresh on initialization
-- Tokens stored securely in Unity Catalog connection
-- Supports both read-only and full Analytics scopes
+- Uses Google Service Account authentication with JWT bearer flow
+- Automatic access token refresh when tokens expire (1-hour validity)
+- Service account JSON key stored securely in Unity Catalog connection
+- Supports both `google-auth` library (preferred) and `cryptography` library (fallback)
+- Requires service account to be granted access to GA4 property (minimum "Viewer" role)
 
 ### Schema Design
 - All reports include a `_composite_key` field (composite of dimensions)
@@ -200,21 +201,25 @@ The connector provides 5 predefined report types optimized for common analytics 
 
 ### Prerequisites
 1. Google Cloud project with Analytics Data API enabled
-2. OAuth 2.0 credentials (Client ID and Client Secret)
-3. Refresh token with Analytics API scope
+2. Service Account created with JSON key downloaded
+3. Service Account granted access to GA4 property (minimum "Viewer" role)
 4. GA4 Property ID with data
+5. Python dependencies: `google-auth` (preferred) or `cryptography` (fallback)
 
 ### Running Tests
 
 1. **Configure Credentials:**
    ```bash
    cd sources/ga4_reporting/configs
-   # Edit dev_config.json with your actual credentials
+   # Edit dev_config.json with your service account JSON and property ID
+   # The service_account_json should be a JSON-escaped string
    ```
 
 2. **Install Dependencies:**
    ```bash
-   pip install requests pyspark pytest
+   pip install requests pyspark pytest google-auth
+   # Or use cryptography as fallback:
+   # pip install requests pyspark pytest cryptography
    ```
 
 3. **Run Tests:**

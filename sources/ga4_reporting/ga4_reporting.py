@@ -3,7 +3,10 @@
 import requests
 import json
 import time
+import base64
+import os
 from typing import Dict, List, Iterator
+from datetime import datetime, timedelta
 from pyspark.sql.types import (
     StructType,
     StructField,
@@ -13,6 +16,13 @@ from pyspark.sql.types import (
     BooleanType,
 )
 
+try:
+    from google.oauth2 import service_account
+    from google.auth.transport.requests import Request
+    GOOGLE_AUTH_AVAILABLE = True
+except ImportError:
+    GOOGLE_AUTH_AVAILABLE = False
+
 
 class LakeflowConnect:
     def __init__(self, options: Dict[str, str]) -> None:
@@ -21,28 +31,124 @@ class LakeflowConnect:
 
         Args:
             options: Dictionary containing:
-                - client_id: Google OAuth client ID
-                - client_secret: Google OAuth client secret
-                - refresh_token: Google OAuth refresh token
+                - service_account_json: Google Service Account credentials as:
+                    * JSON string (escaped)
+                    * JSON object (dict)
+                    * File path to .json file (string ending with .json)
                 - property_id: GA4 property ID (e.g., "123456789")
                 - start_date: Start date for reports (default: "30daysAgo")
                 - end_date: End date for reports (default: "yesterday")
         """
-        self.client_id = options["client_id"]
-        self.client_secret = options["client_secret"]
-        self.refresh_token = options["refresh_token"]
         self.property_id = options["property_id"]
         self.start_date = options.get("start_date", "30daysAgo")
         self.end_date = options.get("end_date", "yesterday")
+        self.report_configs = options.get("report_configs", self._build_default_report_configurations())
+
+        # Parse service account credentials from various input formats
+        self.service_account_info = self._parse_service_account_credentials(
+            options.get("service_account_json", options)
+        )
 
         # Get access token
         self.access_token = self._get_access_token()
+        self.token_expiry = None
 
         # Base URL for GA4 Data API
         self.base_url = "https://analyticsdata.googleapis.com/v1beta"
 
-        # Define report configurations
-        self._report_configs = {
+        # Build report configurations
+        self._report_configs = self._build_default_report_configurations()
+
+    def _parse_service_account_credentials(self, credentials_input) -> Dict:
+        """
+        Parse service account credentials from various input formats.
+
+        Args:
+            credentials_input: Can be:
+                - A JSON string (escaped)
+                - A dictionary (already parsed JSON)
+                - A file path to a .json file
+
+        Returns:
+            Dictionary containing service account credentials
+
+        Raises:
+            ValueError: If credentials cannot be parsed
+        """
+        # Case 1: Already a dictionary with service account fields
+        if isinstance(credentials_input, dict):
+            # Check if it looks like service account credentials directly
+            if "type" in credentials_input and credentials_input.get("type") == "service_account":
+                return credentials_input
+            # Check if service_account_json is nested in the dict
+            elif "service_account_json" in credentials_input:
+                return self._parse_service_account_credentials(
+                    credentials_input["service_account_json"]
+                )
+            else:
+                raise ValueError(
+                    "Invalid credentials format: dictionary must contain 'type': 'service_account' "
+                    "or 'service_account_json' key"
+                )
+
+        # Case 2: String - could be JSON or file path
+        elif isinstance(credentials_input, str):
+            # Check if it's a file path
+            if credentials_input.endswith(".json"):
+                try:
+                    with open(credentials_input, "r") as f:
+                        return json.load(f)
+                except FileNotFoundError:
+                    raise ValueError(
+                        f"Service account JSON file not found: {credentials_input}"
+                    )
+                except json.JSONDecodeError as e:
+                    raise ValueError(
+                        f"Invalid JSON in service account file {credentials_input}: {str(e)}"
+                    )
+
+            # Try to parse as JSON string
+            try:
+                parsed = json.loads(credentials_input)
+                if isinstance(parsed, dict) and parsed.get("type") == "service_account":
+                    return parsed
+                else:
+                    raise ValueError(
+                        "Parsed JSON does not contain valid service account credentials"
+                    )
+            except json.JSONDecodeError as e:
+                raise ValueError(
+                    f"service_account_json must be valid JSON string, file path, or dict. "
+                    f"Parse error: {str(e)}"
+                )
+
+        else:
+            raise ValueError(
+                f"service_account_json must be a string or dict, got {type(credentials_input)}"
+            )
+
+    def build_report_configurations(self, report_configs: Dict) -> None:
+        """
+        Build and return GA4 report configurations.
+        
+        Args:
+            report_configs: Dictionary containing report configurations
+        """
+        self._report_configs = report_configs
+
+    def _build_default_report_configurations(self) -> Dict:
+        """
+        Build and return GA4 report configurations.
+        
+        Each report configuration defines:
+        - dimensions: List of dimension objects to group by
+        - metrics: List of metric objects to aggregate
+        - primary_key: List of dimension names that form the composite key
+        
+        Returns:
+            Dictionary mapping report names to their configurations
+        """
+        return {
             "basic_report": {
                 "dimensions": [
                     {"name": "date"},
@@ -118,27 +224,111 @@ class LakeflowConnect:
 
     def _get_access_token(self) -> str:
         """
-        Exchange refresh token for access token.
+        Get access token using service account credentials.
 
         Returns:
             Access token string
         """
-        token_url = "https://oauth2.googleapis.com/token"
-        data = {
-            "grant_type": "refresh_token",
-            "client_id": self.client_id,
-            "client_secret": self.client_secret,
-            "refresh_token": self.refresh_token,
+        if GOOGLE_AUTH_AVAILABLE:
+            # Use google-auth library if available (preferred method)
+            scopes = ["https://www.googleapis.com/auth/analytics.readonly"]
+            credentials = service_account.Credentials.from_service_account_info(
+                self.service_account_info, scopes=scopes
+            )
+            credentials.refresh(Request())
+            self.token_expiry = credentials.expiry
+            return credentials.token
+        else:
+            # Fallback to manual JWT creation if google-auth not available
+            return self._create_jwt_token()
+
+    def _create_jwt_token(self) -> str:
+        """
+        Create JWT token manually for service account authentication.
+        This is a fallback method when google-auth library is not available.
+
+        Returns:
+            Access token string
+        """
+        import hashlib
+        import hmac
+
+        # JWT Header
+        header = {"alg": "RS256", "typ": "JWT"}
+        header_encoded = base64.urlsafe_b64encode(
+            json.dumps(header).encode()
+        ).decode().rstrip("=")
+
+        # JWT Claim Set
+        now = int(time.time())
+        claim = {
+            "iss": self.service_account_info["client_email"],
+            "scope": "https://www.googleapis.com/auth/analytics.readonly",
+            "aud": "https://oauth2.googleapis.com/token",
+            "exp": now + 3600,
+            "iat": now,
         }
+        claim_encoded = base64.urlsafe_b64encode(
+            json.dumps(claim).encode()
+        ).decode().rstrip("=")
 
-        response = requests.post(token_url, data=data)
+        # Create signature
+        message = f"{header_encoded}.{claim_encoded}"
 
-        if response.status_code != 200:
-            raise Exception(
-                f"Failed to get access token: {response.status_code} {response.text}"
+        # Import cryptography for RSA signing
+        try:
+            from cryptography.hazmat.primitives import hashes, serialization
+            from cryptography.hazmat.primitives.asymmetric import padding
+            from cryptography.hazmat.backends import default_backend
+
+            # Load private key
+            private_key_str = self.service_account_info["private_key"]
+            private_key = serialization.load_pem_private_key(
+                private_key_str.encode(), password=None, backend=default_backend()
             )
 
-        return response.json()["access_token"]
+            # Sign the message
+            signature = private_key.sign(
+                message.encode(),
+                padding.PKCS1v15(),
+                hashes.SHA256()
+            )
+
+            signature_encoded = base64.urlsafe_b64encode(signature).decode().rstrip("=")
+
+            # Combine to create JWT
+            jwt_token = f"{message}.{signature_encoded}"
+
+            # Exchange JWT for access token
+            token_url = "https://oauth2.googleapis.com/token"
+            data = {
+                "grant_type": "urn:ietf:params:oauth:grant-type:jwt-bearer",
+                "assertion": jwt_token,
+            }
+
+            response = requests.post(token_url, data=data)
+
+            if response.status_code != 200:
+                raise Exception(
+                    f"Failed to get access token: {response.status_code} {response.text}"
+                )
+
+            token_data = response.json()
+            self.token_expiry = datetime.now() + timedelta(seconds=token_data.get("expires_in", 3600))
+            return token_data["access_token"]
+
+        except ImportError:
+            raise Exception(
+                "Neither google-auth nor cryptography library is available. "
+                "Please install one of them: 'pip install google-auth' or 'pip install cryptography'"
+            )
+
+    def _refresh_token_if_needed(self):
+        """
+        Refresh the access token if it's expired or about to expire.
+        """
+        if self.token_expiry is None or datetime.now() >= self.token_expiry - timedelta(minutes=5):
+            self.access_token = self._get_access_token()
 
     def list_tables(self) -> List[str]:
         """
@@ -248,6 +438,9 @@ class LakeflowConnect:
         has_more = True
 
         while has_more:
+            # Refresh token if needed
+            self._refresh_token_if_needed()
+
             # Build request body
             request_body = {
                 "dateRanges": [
@@ -376,6 +569,9 @@ class LakeflowConnect:
             Dictionary with status and message
         """
         try:
+            # Refresh token if needed
+            self._refresh_token_if_needed()
+
             # Try to get metadata about the property
             url = f"{self.base_url}/properties/{self.property_id}/metadata"
             headers = {"Authorization": f"Bearer {self.access_token}"}

@@ -20,14 +20,68 @@ To configure the connector, provide the following parameters in your connector o
 
 | Parameter | Type | Required | Description | Example |
 |-----------|------|----------|-------------|---------|
-| `client_id` | String | Yes | Google OAuth 2.0 Client ID | `123456789.apps.googleusercontent.com` |
-| `client_secret` | String | Yes | Google OAuth 2.0 Client Secret | `GOCSPX-abc123...` |
-| `refresh_token` | String | Yes | OAuth 2.0 refresh token with Analytics API access | `1//0abc123...` |
+| `service_account_json` OR service account fields | String/Dict/File | Yes | Google Service Account credentials - see formats below | Multiple formats supported |
 | `property_id` | String | Yes | GA4 Property ID (numeric only, no "properties/" prefix) | `123456789` |
 | `start_date` | String | No | Start date for the report data (default: "30daysAgo") | `2024-01-01` or `30daysAgo` |
 | `end_date` | String | No | End date for the report data (default: "yesterday") | `2024-01-31` or `yesterday` |
 
-### How to Obtain Google OAuth 2.0 Credentials
+### Service Account Configuration Formats
+
+The connector accepts service account credentials in **three flexible formats**:
+
+#### **Format 1: Direct JSON Object (Recommended for dev_config.json)**
+Place the service account fields directly in your configuration file without escaping:
+
+```json
+{
+  "type": "service_account",
+  "project_id": "your-project-id",
+  "private_key_id": "abc123...",
+  "private_key": "-----BEGIN PRIVATE KEY-----\n...\n-----END PRIVATE KEY-----\n",
+  "client_email": "service-account@project.iam.gserviceaccount.com",
+  "client_id": "123456789",
+  "auth_uri": "https://accounts.google.com/o/oauth2/auth",
+  "token_uri": "https://oauth2.googleapis.com/token",
+  "auth_provider_x509_cert_url": "https://www.googleapis.com/oauth2/v1/certs",
+  "client_x509_cert_url": "https://www.googleapis.com/robot/v1/metadata/x509/...",
+  "universe_domain": "googleapis.com",
+  "property_id": "123456789",
+  "start_date": "30daysAgo",
+  "end_date": "yesterday"
+}
+```
+
+#### **Format 2: File Path (Recommended for Production)**
+Reference the path to your service account JSON file:
+
+```json
+{
+  "service_account_json": "/path/to/service-account-key.json",
+  "property_id": "123456789",
+  "start_date": "30daysAgo",
+  "end_date": "yesterday"
+}
+```
+
+Or use relative paths:
+```json
+{
+  "service_account_json": "configs/service-account-key.json",
+  "property_id": "123456789"
+}
+```
+
+#### **Format 3: Escaped JSON String (For Unity Catalog Connections)**
+Provide the entire JSON key as an escaped string:
+
+```json
+{
+  "service_account_json": "{\"type\": \"service_account\", \"project_id\": \"your-project\", ...}",
+  "property_id": "123456789"
+}
+```
+
+### How to Obtain Google Service Account Credentials
 
 1. **Create a Google Cloud Project**:
    - Go to [Google Cloud Console](https://console.cloud.google.com/)
@@ -38,25 +92,39 @@ To configure the connector, provide the following parameters in your connector o
    - Search for "Google Analytics Data API"
    - Click "Enable"
 
-3. **Create OAuth 2.0 Credentials**:
-   - Go to "APIs & Services" > "Credentials"
-   - Click "Create Credentials" > "OAuth client ID"
-   - Choose "Desktop app" or "Web application"
-   - Note down the Client ID and Client Secret
+3. **Create a Service Account**:
+   - Go to "IAM & Admin" > "Service Accounts"
+   - Click "Create Service Account"
+   - Provide a name and description (e.g., "GA4 Reporting Connector")
+   - Click "Create and Continue"
+   - Skip granting roles (not needed for this step)
+   - Click "Done"
 
-4. **Generate a Refresh Token**:
-   - Use the [OAuth 2.0 Playground](https://developers.google.com/oauthplayground/) or create a custom OAuth flow
-   - Configure it to use your Client ID and Client Secret
-   - Authorize the following scopes:
-     - `https://www.googleapis.com/auth/analytics.readonly`
-   - Exchange the authorization code for tokens
-   - Save the refresh token (it doesn't expire unless revoked)
+4. **Create and Download Service Account Key**:
+   - Click on the newly created service account
+   - Go to the "Keys" tab
+   - Click "Add Key" > "Create new key"
+   - Choose "JSON" format
+   - Click "Create" - the JSON key file will be downloaded
+   - **Keep this file secure** - it provides access to your GCP resources
 
-5. **Find Your GA4 Property ID**:
+5. **Grant Service Account Access to GA4 Property**:
    - Go to [Google Analytics](https://analytics.google.com/)
-   - Navigate to Admin > Property Settings
+   - Navigate to Admin > Property Access Management
+   - Click "+" and select "Add users"
+   - Enter the service account email (found in the JSON key, looks like `xxx@xxx.iam.gserviceaccount.com`)
+   - Assign "Viewer" role (or higher if needed)
+   - Click "Add"
+
+6. **Find Your GA4 Property ID**:
+   - In Google Analytics, go to Admin > Property Settings
    - Your Property ID is shown at the top (e.g., "123456789")
    - Use only the numeric value, without the "properties/" prefix
+
+7. **Use the Service Account JSON**:
+   - **Option A (Easiest)**: Copy the JSON fields directly into your config (see Format 1 above)
+   - **Option B (Most Secure)**: Reference the file path (see Format 2 above)
+   - **Option C (Unity Catalog)**: Use escaped JSON string (see Format 3 above)
 
 ### Create a Unity Catalog Connection
 
@@ -154,7 +222,9 @@ Follow the Lakeflow Community Connector UI, which will guide you through setting
 ### Step 2: Configure Your Pipeline
 
 1. Update the `pipeline_spec` in the main pipeline file (e.g., `ingest.py`).
-2. Ensure your Unity Catalog connection contains the correct OAuth credentials and GA4 Property ID.
+2. Ensure your Unity Catalog connection contains:
+   - The complete service account JSON key as a string in `service_account_json`
+   - The GA4 Property ID in `property_id`
 3. (Optional) Customize the `start_date` and `end_date` in your connection options to control the reporting period:
    - Use relative dates like "30daysAgo", "7daysAgo", "yesterday", "today"
    - Use absolute dates in YYYY-MM-DD format like "2024-01-01"
@@ -181,12 +251,17 @@ Follow the Lakeflow Community Connector UI, which will guide you through setting
 **Common Issues:**
 
 1. **Authentication Errors (401 Unauthorized)**
-   - **Cause**: Expired or invalid refresh token
-   - **Solution**: Regenerate the refresh token using OAuth 2.0 Playground and update the connection
+   - **Cause**: Invalid service account credentials or expired token
+   - **Solution**: 
+     - Verify the service account JSON is complete and valid
+     - Ensure the service account has been granted access to the GA4 property
+     - Check that the Google Analytics Data API is enabled in your GCP project
 
 2. **Property Not Found (404)**
    - **Cause**: Incorrect Property ID or insufficient permissions
-   - **Solution**: Verify the Property ID in GA4 Admin settings and ensure your OAuth account has access
+   - **Solution**: 
+     - Verify the Property ID in GA4 Admin settings
+     - Ensure the service account email has been added as a user in Property Access Management with at least "Viewer" role
 
 3. **Quota Exceeded (429 Too Many Requests)**
    - **Cause**: Exceeded daily API quota

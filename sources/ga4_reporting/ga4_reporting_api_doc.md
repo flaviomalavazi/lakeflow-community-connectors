@@ -2,15 +2,39 @@
 
 ## **Authorization**
 
-The GA4 Reporting Data API uses OAuth 2.0 for authentication. The connector stores `client_id`, `client_secret`, and `refresh_token`, and exchanges them for an access token at runtime.
+The GA4 Reporting Data API uses Google Service Account authentication. The connector stores the complete service account JSON key and uses it to obtain access tokens at runtime.
 
-**Preferred Method: OAuth 2.0 with Refresh Token**
+**Preferred Method: Service Account Authentication**
 
-- **Authorization Endpoint**: `https://accounts.google.com/o/oauth2/auth`
 - **Token Endpoint**: `https://oauth2.googleapis.com/token`
 - **Required Scopes**:
   - `https://www.googleapis.com/auth/analytics.readonly` (read-only access)
   - `https://www.googleapis.com/auth/analytics` (read/write access)
+
+**Service Account Key Structure:**
+
+```json
+{
+  "type": "service_account",
+  "project_id": "your-project-id",
+  "private_key_id": "key-id",
+  "private_key": "-----BEGIN PRIVATE KEY-----\n...\n-----END PRIVATE KEY-----\n",
+  "client_email": "service-account@project-id.iam.gserviceaccount.com",
+  "client_id": "123456789",
+  "auth_uri": "https://accounts.google.com/o/oauth2/auth",
+  "token_uri": "https://oauth2.googleapis.com/token",
+  "auth_provider_x509_cert_url": "https://www.googleapis.com/oauth2/v1/certs",
+  "client_x509_cert_url": "https://www.googleapis.com/service_accounts/v1/metadata/x509/...",
+  "universe_domain": "googleapis.com"
+}
+```
+
+**Authentication Flow:**
+
+1. The connector loads the service account JSON key
+2. Creates a JWT (JSON Web Token) signed with the private key
+3. Exchanges the JWT for an access token using the OAuth 2.0 JWT bearer flow
+4. Access tokens are valid for 1 hour and automatically refreshed as needed
 
 **Access Token Exchange:**
 
@@ -18,18 +42,15 @@ The GA4 Reporting Data API uses OAuth 2.0 for authentication. The connector stor
 POST https://oauth2.googleapis.com/token
 Content-Type: application/x-www-form-urlencoded
 
-grant_type=refresh_token
-&client_id={client_id}
-&client_secret={client_secret}
-&refresh_token={refresh_token}
+grant_type=urn:ietf:params:oauth:grant-type:jwt-bearer
+&assertion={signed_jwt_token}
 ```
 
 **Response:**
 ```json
 {
   "access_token": "ya29.a0AfH6SMBx...",
-  "expires_in": 3599,
-  "scope": "https://www.googleapis.com/auth/analytics.readonly",
+  "expires_in": 3600,
   "token_type": "Bearer"
 }
 ```
@@ -41,6 +62,14 @@ All API requests must include the access token in the Authorization header:
 ```http
 Authorization: Bearer {access_token}
 ```
+
+**Service Account Setup Requirements:**
+
+1. Service account must be created in a Google Cloud project with Analytics Data API enabled
+2. Service account email must be granted access to the GA4 property (minimum "Viewer" role)
+3. The connector supports two authentication methods:
+   - Using `google-auth` library (preferred, install with `pip install google-auth`)
+   - Using `cryptography` library for manual JWT signing (fallback, install with `pip install cryptography`)
 
 ## **Object List**
 

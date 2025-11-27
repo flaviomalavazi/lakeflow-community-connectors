@@ -182,6 +182,8 @@ class LakeflowConnectTester:
     def __init__(self, init_options: dict):
         self._init_options = init_options
         self.test_results: List[TestResult] = []
+        self.connector = None
+        self.connector_test_utils = None
 
     def run_all_tests(self) -> TestReport:
         """Run all available tests and return a comprehensive report"""

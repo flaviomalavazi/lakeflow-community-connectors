@@ -7,8 +7,11 @@
 .coverage
 htmlcov/
 .tox/
+.venv/
+**/__pycache__/
 
 # Configs with secrets (be careful not to commit real credentials)
 **/configs/*_config.json
 !**/configs/example_config.json
+**.egg-info/
 

@@ -6,28 +6,69 @@ This guide helps you quickly set up and test the Google Analytics 4 Reporting co
 
 ### 1. Set Up Your Credentials
 
-Edit `sources/ga4_reporting/configs/dev_config.json` with your actual credentials:
+The connector supports **three configuration formats**. Choose the one that works best for you:
+
+#### **Option A: Direct JSON Object (Easiest for Local Testing)**
+
+Simply paste your service account JSON content directly into `dev_config.json`:
 
 ```json
 {
-  "client_id": "YOUR_GOOGLE_CLIENT_ID.apps.googleusercontent.com",
-  "client_secret": "YOUR_GOOGLE_CLIENT_SECRET",
-  "refresh_token": "YOUR_REFRESH_TOKEN",
-  "property_id": "YOUR_GA4_PROPERTY_ID",
+  "type": "service_account",
+  "project_id": "your-project-id",
+  "private_key_id": "abc123...",
+  "private_key": "-----BEGIN PRIVATE KEY-----\nYOUR_ACTUAL_KEY\n-----END PRIVATE KEY-----\n",
+  "client_email": "your-sa@project.iam.gserviceaccount.com",
+  "client_id": "123456789",
+  "auth_uri": "https://accounts.google.com/o/oauth2/auth",
+  "token_uri": "https://oauth2.googleapis.com/token",
+  "auth_provider_x509_cert_url": "https://www.googleapis.com/oauth2/v1/certs",
+  "client_x509_cert_url": "https://www.googleapis.com/robot/v1/metadata/x509/...",
+  "universe_domain": "googleapis.com",
+  "property_id": "123456789",
   "start_date": "30daysAgo",
   "end_date": "yesterday"
 }
 ```
 
+#### **Option B: File Path (Most Secure)**
+
+Keep your service account key in a separate file and reference it:
+
+```json
+{
+  "service_account_json": "configs/my-service-account.json",
+  "property_id": "123456789",
+  "start_date": "30daysAgo",
+  "end_date": "yesterday"
+}
+```
+
+#### **Option C: Escaped JSON String (For Unity Catalog)**
+
+Provide the entire JSON as an escaped string:
+
+```json
+{
+  "service_account_json": "{\"type\": \"service_account\", \"project_id\": \"...\", ...}",
+  "property_id": "123456789"
+}
+```
+
 **Important:** 
 - Use only the numeric Property ID (e.g., "123456789"), not "properties/123456789"
-- Ensure your refresh token has the `https://www.googleapis.com/auth/analytics.readonly` scope
-- Do NOT commit this file to version control - it's in .gitignore for security
+- Ensure the service account has been granted access to your GA4 property with at least "Viewer" role
+- Do NOT commit service account credentials to version control - they're in .gitignore
 
 ### 2. Install Dependencies
 
 ```bash
-pip install requests pyspark
+pip install requests pyspark google-auth
+```
+
+**Note:** The connector can also work with `cryptography` library as a fallback:
+```bash
+pip install requests pyspark cryptography
 ```
 
 ### 3. Run the Tests
@@ -46,19 +87,49 @@ This will:
 
 ### 4. Test Individual Components
 
-You can also test the connector interactively:
+You can also test the connector interactively with any of the three formats:
 
+**Using File Path (Recommended):**
 ```python
 from sources.ga4_reporting.ga4_reporting import LakeflowConnect
 
-# Initialize with your config
 config = {
-    "client_id": "YOUR_CLIENT_ID",
-    "client_secret": "YOUR_CLIENT_SECRET",
-    "refresh_token": "YOUR_REFRESH_TOKEN",
+    "service_account_json": "path/to/service-account-key.json",
     "property_id": "123456789",
     "start_date": "7daysAgo",
     "end_date": "yesterday"
+}
+
+connector = LakeflowConnect(config)
+```
+
+**Using Direct JSON Object:**
+```python
+import json
+
+with open("service-account-key.json", "r") as f:
+    sa_dict = json.load(f)
+
+config = {
+    **sa_dict,  # Spread service account fields into config
+    "property_id": "123456789",
+    "start_date": "7daysAgo",
+    "end_date": "yesterday"
+}
+
+connector = LakeflowConnect(config)
+```
+
+**Using Escaped JSON String:**
+```python
+import json
+
+with open("service-account-key.json", "r") as f:
+    sa_json_string = json.dumps(json.load(f))
+
+config = {
+    "service_account_json": sa_json_string,
+    "property_id": "123456789"
 }
 
 connector = LakeflowConnect(config)
@@ -123,12 +194,14 @@ for report in reports_to_test:
 
 ### Authentication Errors
 
-**Error:** `Failed to get access token: 400`
+**Error:** `Failed to get access token: 400` or `401 Unauthorized`
 
 **Solutions:**
-- Verify your client_id and client_secret are correct
-- Ensure refresh_token hasn't been revoked
-- Regenerate refresh token using OAuth 2.0 Playground
+- Verify your service account JSON is complete and valid
+- Ensure the service account has been granted access to the GA4 property (Admin > Property Access Management)
+- Check that the Google Analytics Data API is enabled in your GCP project
+- Verify the service account email and private key are correct
+- Install required dependencies: `pip install google-auth` or `pip install cryptography`
 
 ### Empty Results
 

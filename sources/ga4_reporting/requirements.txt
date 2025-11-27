@@ -1,0 +1,11 @@
+# Required dependencies for GA4 Reporting connector
+requests>=2.25.0
+pyspark>=3.0.0
+
+# Authentication libraries (install at least one)
+# Option 1: Google Auth (recommended)
+google-auth>=2.0.0
+
+# Option 2: Cryptography (fallback)
+# cryptography>=3.4.0
+
