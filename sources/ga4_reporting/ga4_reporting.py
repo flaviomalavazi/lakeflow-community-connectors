@@ -36,12 +36,14 @@ class LakeflowConnect:
                     * JSON object (dict)
                     * File path to .json file (string ending with .json)
                 - property_id: GA4 property ID (e.g., "123456789")
-                - start_date: Start date for reports (default: "30daysAgo")
+                - initial_date: Initial date for first-time ingestion (default: "2024-01-01")
                 - end_date: End date for reports (default: "yesterday")
+                - report_configs: Optional custom report configurations
         """
         self.property_id = options["property_id"]
-        self.start_date = options.get("start_date", "30daysAgo")
+        self.initial_date = options.get("initial_date", "2024-01-01")
         self.end_date = options.get("end_date", "yesterday")
+        self.lookback_days = int(options.get("lookback_days", 3))  # Default 3-day lookback for data freshness
         self.report_configs = options.get("report_configs", self._build_default_report_configurations())
 
         # Parse service account credentials from various input formats
@@ -391,48 +393,83 @@ class LakeflowConnect:
             table_name: Name of the report type
 
         Returns:
-            Dictionary with primary_key and ingestion_type
+            Dictionary with primary_key, cursor_field, and ingestion_type
         """
         if table_name not in self._report_configs:
             raise ValueError(f"Unknown report type: {table_name}")
 
-        # All GA4 reports use snapshot ingestion since data is aggregated
-        return {"primary_key": "_composite_key", "ingestion_type": "snapshot"}
+        # All GA4 reports use CDC ingestion to handle data freshness window
+        # The lookback window ensures we re-ingest last N days to capture late-arriving events
+        # CDC mode ensures only latest version of each row is kept (deduplication by primary_key)
+        return {
+            "primary_key": "_composite_key",
+            "cursor_field": "date",
+            "ingestion_type": "cdc"
+        }
 
     def read_table(
         self, table_name: str, start_offset: Dict
     ) -> tuple[Iterator[Dict], Dict]:
         """
-        Read data from a GA4 report.
+        Read data from a GA4 report incrementally with lookback window.
+
+        The lookback window ensures we re-ingest recent data to capture:
+        - Late-arriving events (GA4 24-48 hour processing window)
+        - Data corrections and updates
+        
+        CDC ingestion mode ensures only the latest version of each row is kept.
 
         Args:
             table_name: Name of the report type
-            start_offset: Not used for snapshot ingestion
+            start_offset: Dictionary containing the last ingested date
+                - For incremental: {"date": "YYYYMMDD"}
+                - For initial load: {} or None
 
         Returns:
-            Tuple of (records iterator, empty offset dict)
+            Tuple of (records iterator, new offset dict with max date)
         """
         if table_name not in self._report_configs:
             raise ValueError(f"Unknown report type: {table_name}")
 
-        # For snapshot, we always read all data
-        records = self._fetch_report_data(table_name)
+        # Determine start date for this incremental read
+        if start_offset and start_offset.get("date"):
+            # Incremental with lookback: go back N days from last checkpoint
+            # This ensures we re-ingest recent data to capture late-arriving events
+            last_date = start_offset["date"]
+            start_date = self._subtract_days(last_date, self.lookback_days)
+        else:
+            # Initial load: use configured initial_date
+            start_date = self.initial_date
 
-        # Return empty offset since this is snapshot ingestion
-        return records, {}
+        # Fetch data from start_date to end_date
+        records_iter, max_date = self._fetch_report_data_incremental(
+            table_name, start_date
+        )
 
-    def _fetch_report_data(self, table_name: str) -> Iterator[Dict]:
+        # Return new offset with max date seen
+        # This will be the checkpoint for next run
+        new_offset = {"date": max_date} if max_date else {}
+        return records_iter, new_offset
+
+    def _fetch_report_data_incremental(
+        self, table_name: str, start_date: str
+    ) -> tuple[Iterator[Dict], str]:
         """
-        Fetch all data for a report using pagination.
+        Fetch incremental data for a report using pagination.
 
         Args:
             table_name: Name of the report type
+            start_date: Start date for this incremental fetch (YYYY-MM-DD or relative)
 
-        Yields:
-            Report records as dictionaries
+        Returns:
+            Tuple of (records iterator, max_date_seen)
         """
         config = self._report_configs[table_name]
-
+        
+        # Collect all records first to determine max_date
+        all_records = []
+        max_date_seen = None
+        
         offset = 0
         limit = 100000  # Max per request
         has_more = True
@@ -444,7 +481,7 @@ class LakeflowConnect:
             # Build request body
             request_body = {
                 "dateRanges": [
-                    {"startDate": self.start_date, "endDate": self.end_date}
+                    {"startDate": start_date, "endDate": self.end_date}
                 ],
                 "dimensions": config["dimensions"],
                 "metrics": config["metrics"],
@@ -484,7 +521,14 @@ class LakeflowConnect:
                 record = self._transform_row(
                     row, dimension_headers, metric_headers, config
                 )
-                yield record
+                
+                # Track max date for offset
+                if "date" in record:
+                    date_value = record["date"]
+                    if max_date_seen is None or date_value > max_date_seen:
+                        max_date_seen = date_value
+                
+                all_records.append(record)
 
             # Check if there are more pages
             row_count = len(rows)
@@ -495,6 +539,9 @@ class LakeflowConnect:
 
             # Rate limiting - be nice to the API
             time.sleep(0.1)
+
+        # Return iterator over collected records and max date
+        return iter(all_records), max_date_seen or start_date
 
     def _transform_row(
         self,
@@ -560,6 +607,51 @@ class LakeflowConnect:
         record["_composite_key"] = "|".join(key_parts)
 
         return record
+
+    def _subtract_days(self, date_str: str, days: int) -> str:
+        """
+        Subtract N days from a date.
+
+        Args:
+            date_str: Date string in YYYYMMDD format
+            days: Number of days to subtract
+
+        Returns:
+            Date minus N days in YYYYMMDD format
+        """
+        # Parse YYYYMMDD format
+        year = int(date_str[:4])
+        month = int(date_str[4:6])
+        day = int(date_str[6:8])
+        
+        # Create date object and subtract days
+        date_obj = datetime(year, month, day)
+        earlier_date = date_obj - timedelta(days=days)
+        
+        # Return in YYYYMMDD format
+        return earlier_date.strftime("%Y%m%d")
+    
+    def _increment_date(self, date_str: str) -> str:
+        """
+        Increment a date by one day.
+
+        Args:
+            date_str: Date string in YYYYMMDD format
+
+        Returns:
+            Next day in YYYYMMDD format
+        """
+        # Parse YYYYMMDD format
+        year = int(date_str[:4])
+        month = int(date_str[4:6])
+        day = int(date_str[6:8])
+        
+        # Create date object and add one day
+        date_obj = datetime(year, month, day)
+        next_day = date_obj + timedelta(days=1)
+        
+        # Return in YYYYMMDD format
+        return next_day.strftime("%Y%m%d")
 
     def test_connection(self) -> Dict:
         """
