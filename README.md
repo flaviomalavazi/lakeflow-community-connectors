@@ -24,3 +24,4 @@ This directory includes generic shared test suites to validate any connector sou
 ## TODO:
 1. Add dev guidelines
 2. Add general instruction on how to use community connector (e.g. update spec and create a SDP for ingestion)
+3. Add the step to add the auto-generated file for the source.
